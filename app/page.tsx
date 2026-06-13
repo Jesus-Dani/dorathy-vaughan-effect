@@ -158,7 +158,7 @@ export default function Home() {
   const isRequired = step === 1 || step === 2;
 
   return (
-    <div className="flex flex-col min-h-[100dvh]" style={{ background: "var(--bg)" }}>
+    <div className="flex flex-col h-full" style={{ background: "var(--bg)" }}>
       {/* Header */}
       <header
         className="shrink-0 flex items-center justify-center px-4 py-4 border-b"

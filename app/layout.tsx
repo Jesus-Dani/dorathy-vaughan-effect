@@ -32,7 +32,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} h-full`}>
+    <html lang="en" className={inter.variable}>
       <body className="h-full flex flex-col">{children}</body>
     </html>
   );

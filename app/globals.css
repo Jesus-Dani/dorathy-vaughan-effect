@@ -24,7 +24,8 @@
 
 html,
 body {
-  min-height: 100dvh;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 body {
