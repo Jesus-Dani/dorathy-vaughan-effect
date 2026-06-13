@@ -1,12 +1,10 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenAI } from "@google/genai";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 function buildResearchPrompt(
   field: string,
@@ -86,50 +84,17 @@ export async function POST(request: Request) {
       );
     }
 
-    // ── Call 1: Research (web search) — isolated try/catch, never kills the request ──
+    // ── Call 1: Research (Google Search grounding) — isolated, never kills the request ──
     let researchNotes = "";
     try {
-      let researchResponse: Anthropic.Message;
-      try {
-        // Attempt with the primary tool version
-        researchResponse = await anthropic.messages.create({
-          model: "claude-sonnet-4-6",
-          max_tokens: 2500,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }] as any,
-          messages: [
-            {
-              role: "user",
-              content: buildResearchPrompt(field, role, experience, skills, enjoys),
-            },
-          ],
-        });
-      } catch (toolErr) {
-        const msg = toolErr instanceof Error ? toolErr.message : String(toolErr);
-        // Retry with the newer tool version if the first was rejected
-        if (/unknown|invalid|not.*support|unrecognized/i.test(msg)) {
-          console.error("[analyze] web_search_20250305 rejected, retrying with 20260209:", msg);
-          researchResponse = await anthropic.messages.create({
-            model: "claude-sonnet-4-6",
-            max_tokens: 2500,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 5 }] as any,
-            messages: [
-              {
-                role: "user",
-                content: buildResearchPrompt(field, role, experience, skills, enjoys),
-              },
-            ],
-          });
-        } else {
-          throw toolErr;
-        }
-      }
-
-      researchNotes = researchResponse.content
-        .filter((block): block is Anthropic.TextBlock => block.type === "text")
-        .map((block) => block.text)
-        .join("\n\n");
+      const researchResult = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: buildResearchPrompt(field, role, experience, skills, enjoys),
+        config: {
+          tools: [{ googleSearch: {} }],
+        },
+      });
+      researchNotes = researchResult.text ?? "";
     } catch (researchErr) {
       console.error(
         "[analyze] research call failed:",
@@ -144,57 +109,33 @@ export async function POST(request: Request) {
       researchNotes.trim() ||
       `Research notes unavailable. Generating report from model knowledge as of early 2026.`;
 
-    // ── Call 2: Synthesize — structured JSON, no tools ──
-    const synthResponse = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 8000,
-      system: SYNTH_SYSTEM,
-      messages: [
-        {
-          role: "user",
-          content: buildSynthPrompt(
-            field,
-            role,
-            experience,
-            skills,
-            enjoys,
-            notesForSynth
-          ),
-        },
-      ],
+    // ── Call 2: Synthesize — JSON mode, no tools ──
+    const synthResult = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: buildSynthPrompt(field, role, experience, skills, enjoys, notesForSynth),
+      config: {
+        systemInstruction: SYNTH_SYSTEM,
+        responseMimeType: "application/json",
+        maxOutputTokens: 8000,
+      },
     });
 
-    if (synthResponse.stop_reason === "max_tokens") {
-      throw new Error("Synthesis response was truncated — max_tokens limit reached.");
+    const finishReason = synthResult.candidates?.[0]?.finishReason;
+    if (finishReason === "MAX_TOKENS") {
+      throw new Error("Synthesis response was truncated — MAX_TOKENS reached.");
     }
 
-const rawText = synthResponse.content
-  .filter(
-    (block): block is Anthropic.TextBlock =>
-      block.type === "text"
-  )
-  .map((block) => block.text)
-  .join("\n");
+    const rawText = synthResult.text ?? "";
 
-// Extract JSON: substring from first '{' to last '}'
-const firstBrace = rawText.indexOf("{");
-const lastBrace = rawText.lastIndexOf("}");
+    // Extract JSON: substring from first '{' to last '}'
+    const firstBrace = rawText.indexOf("{");
+    const lastBrace = rawText.lastIndexOf("}");
+    if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+      throw new SyntaxError("No JSON object found in synthesis response.");
+    }
+    const report = JSON.parse(rawText.slice(firstBrace, lastBrace + 1));
 
-if (
-  firstBrace === -1 ||
-  lastBrace === -1 ||
-  lastBrace <= firstBrace
-) {
-  throw new SyntaxError(
-    "No JSON object found in synthesis response."
-  );
-}
-
-const report = JSON.parse(
-  rawText.slice(firstBrace, lastBrace + 1)
-);
-
-return NextResponse.json(report);
+    return NextResponse.json(report);
   } catch (error) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const e = error as any;
