@@ -183,12 +183,18 @@ export async function POST(request: Request) {
 
     return NextResponse.json(report);
   } catch (error) {
-    console.error(
-      "[analyze] error:",
-      error instanceof Error ? `${error.name}: ${error.message}` : error
-    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const e = error as any;
+    console.error("ANALYZE_ERR", e?.name, e?.status, e?.message, error);
     return NextResponse.json(
-      { message: "Analysis failed. Please try again." },
+      {
+        message: "Analysis failed. Please try again.",
+        ...(process.env.NODE_ENV !== "production" && {
+          errorName: e?.name,
+          errorStatus: e?.status,
+          errorMessage: e?.message,
+        }),
+      },
       { status: 500 }
     );
   }

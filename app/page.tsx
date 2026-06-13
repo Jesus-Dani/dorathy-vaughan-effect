@@ -158,7 +158,7 @@ export default function Home() {
   const isRequired = step === 1 || step === 2;
 
   return (
-    <div className="flex flex-col h-full" style={{ background: "var(--bg)" }}>
+    <div className="flex flex-col min-h-[100dvh]" style={{ background: "var(--bg)" }}>
       {/* Header */}
       <header
         className="shrink-0 flex items-center justify-center px-4 py-4 border-b"
@@ -236,6 +236,7 @@ export default function Home() {
           style={{
             background: "var(--surface)",
             borderColor: "var(--border)",
+            paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))",
           }}
         >
           <div className="w-full max-w-[680px] mx-auto flex items-end gap-2">
