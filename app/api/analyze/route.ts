@@ -86,34 +86,68 @@ export async function POST(request: Request) {
       );
     }
 
-    // Call 1 — Research with web search enabled
-    const researchResponse = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 2500,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }] as any,
-      messages: [
-        {
-          role: "user",
-          content: buildResearchPrompt(field, role, experience, skills, enjoys),
-        },
-      ],
-    });
+    // ── Call 1: Research (web search) — isolated try/catch, never kills the request ──
+    let researchNotes = "";
+    try {
+      let researchResponse: Anthropic.Message;
+      try {
+        // Attempt with the primary tool version
+        researchResponse = await anthropic.messages.create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 2500,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }] as any,
+          messages: [
+            {
+              role: "user",
+              content: buildResearchPrompt(field, role, experience, skills, enjoys),
+            },
+          ],
+        });
+      } catch (toolErr) {
+        const msg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+        // Retry with the newer tool version if the first was rejected
+        if (/unknown|invalid|not.*support|unrecognized/i.test(msg)) {
+          console.error("[analyze] web_search_20250305 rejected, retrying with 20260209:", msg);
+          researchResponse = await anthropic.messages.create({
+            model: "claude-sonnet-4-6",
+            max_tokens: 2500,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 5 }] as any,
+            messages: [
+              {
+                role: "user",
+                content: buildResearchPrompt(field, role, experience, skills, enjoys),
+              },
+            ],
+          });
+        } else {
+          throw toolErr;
+        }
+      }
 
-    // Collect all text blocks from the research response
-    const researchNotes = researchResponse.content
-      .filter((block): block is Anthropic.TextBlock => block.type === "text")
-      .map((block) => block.text)
-      .join("\n\n");
+      researchNotes = researchResponse.content
+        .filter((block): block is Anthropic.TextBlock => block.type === "text")
+        .map((block) => block.text)
+        .join("\n\n");
+    } catch (researchErr) {
+      console.error(
+        "[analyze] research call failed:",
+        researchErr instanceof Error
+          ? `${researchErr.name}: ${researchErr.message}`
+          : researchErr
+      );
+      // Fall through — synthesis will run on model knowledge alone
+    }
 
-    const fallbackNotes =
+    const notesForSynth =
       researchNotes.trim() ||
       `Research notes unavailable. Generating report from model knowledge as of early 2026.`;
 
-    // Call 2 — Synthesize into structured JSON (no tools)
+    // ── Call 2: Synthesize — structured JSON, no tools ──
     const synthResponse = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 4096,
+      max_tokens: 8000,
       system: SYNTH_SYSTEM,
       messages: [
         {
@@ -124,35 +158,38 @@ export async function POST(request: Request) {
             experience,
             skills,
             enjoys,
-            fallbackNotes
+            notesForSynth
           ),
         },
       ],
     });
+
+    if (synthResponse.stop_reason === "max_tokens") {
+      throw new Error("Synthesis response was truncated — max_tokens limit reached.");
+    }
 
     const rawText =
       synthResponse.content[0].type === "text"
         ? synthResponse.content[0].text
         : "";
 
-    // Extract the JSON object robustly — strip fences then grab {…}
-    const fenceStripped = rawText
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/\s*```\s*$/i, "")
-      .trim();
+    // Extract JSON: substring from first '{' to last '}'
+    const firstBrace = rawText.indexOf("{");
+    const lastBrace = rawText.lastIndexOf("}");
+    if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+      throw new SyntaxError("No JSON object found in synthesis response.");
+    }
+    const report = JSON.parse(rawText.slice(firstBrace, lastBrace + 1));
 
-    const jsonMatch = fenceStripped.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new SyntaxError("No JSON object found in synthesis response.");
-    const report = JSON.parse(jsonMatch[0]);
     return NextResponse.json(report);
   } catch (error) {
-    console.error("[analyze] error:", error);
-    const message =
-      error instanceof SyntaxError
-        ? "The AI returned an unexpected format. Please try again."
-        : error instanceof Error
-        ? error.message
-        : "Analysis failed. Please try again.";
-    return NextResponse.json({ message }, { status: 500 });
+    console.error(
+      "[analyze] error:",
+      error instanceof Error ? `${error.name}: ${error.message}` : error
+    );
+    return NextResponse.json(
+      { message: "Analysis failed. Please try again." },
+      { status: 500 }
+    );
   }
 }
