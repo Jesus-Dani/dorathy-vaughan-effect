@@ -158,7 +158,7 @@ export default function Home() {
   const isRequired = step === 1 || step === 2;
 
   return (
-    <div className="fixed inset-0 flex flex-col" style={{ background: "var(--bg)" }}>
+    <div className="flex flex-col h-full" style={{ background: "var(--bg)" }}>
       {/* Header */}
       <header
         className="shrink-0 flex items-center justify-center px-4 py-4 border-b"
@@ -189,7 +189,7 @@ export default function Home() {
       </header>
 
       {/* Messages */}
-      <main className="flex-1 overflow-y-auto">
+      <main className="flex-1 overflow-y-auto" style={{ WebkitOverflowScrolling: "touch" }}>
         <div className="w-full max-w-[680px] mx-auto px-4 py-6 space-y-4">
           {messages.map((msg, i) => (
             <ChatMessage

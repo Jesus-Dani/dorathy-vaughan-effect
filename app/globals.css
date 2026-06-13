@@ -22,9 +22,13 @@
   box-sizing: border-box;
 }
 
-html,
+html {
+  height: 100dvh;
+}
+
 body {
   height: 100%;
+  overscroll-behavior: none;
 }
 
 body {
