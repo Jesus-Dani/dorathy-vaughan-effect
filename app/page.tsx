@@ -248,7 +248,7 @@ export default function Home() {
               onKeyDown={onKeyDown}
               placeholder={getPlaceholder(step)}
               disabled={isInputDisabled}
-              className="flex-1 resize-none rounded-xl px-4 py-3 text-sm leading-relaxed outline-none transition-colors"
+              className="flex-1 resize-none rounded-xl px-4 py-3 text-base leading-relaxed outline-none transition-colors"
               style={{
                 background: "var(--bg)",
                 border: "1px solid var(--border)",
