@@ -1,65 +1,297 @@
-import Image from "next/image";
+"use client";
+
+import { useState, useRef, useEffect, KeyboardEvent } from "react";
+import ChatMessage from "@/components/ChatMessage";
+import TypingIndicator from "@/components/TypingIndicator";
+import ReportView from "@/components/ReportView";
+import type { Report } from "@/types/report";
+
+interface Message {
+  id: string;
+  role: "assistant" | "user";
+  content: string;
+}
+
+const INTRO =
+  `In 1958, Dorothy Vaughan watched IBM mainframes arrive at NASA. While her colleagues waited to see what would happen, she taught herself FORTRAN — and became the person who ran the machines.\n\nAI is the new mainframe. Every field, every role. The question isn't whether things are changing. It's whether you'll be the one running the machine.\n\nThis tool gives you a personalized briefing on where your industry is heading and the exact skills to get there. Ten minutes, one report, one clear move.\n\nType **start** to begin.`;
+
+const QUESTIONS = [
+  "What field or industry are you in?",
+  "What's your current role?",
+  "How many years of experience do you have? *(You can skip this — just press Enter.)*",
+  "What are your top skills right now? *(Or skip — we can work from your role.)*",
+  "What part of your work do you enjoy most? *(Skip if you'd prefer — this helps personalize your Dorothy move.)*",
+];
+
+type AnswerKey = "field" | "role" | "experience" | "skills" | "enjoys";
+const ANSWER_KEYS: AnswerKey[] = ["field", "role", "experience", "skills", "enjoys"];
+
+function getPlaceholder(step: number): string {
+  if (step === 0) return "Type start to begin…";
+  if (step === 1) return "e.g. Healthcare, Software, Finance…";
+  if (step === 2) return "e.g. Product Manager, Nurse, Data Analyst…";
+  if (step === 3) return "e.g. 5 years  (or press Enter to skip)";
+  if (step === 4) return "e.g. Python, project management… (or skip)";
+  if (step === 5) return "e.g. working with clients, solving technical puzzles… (or skip)";
+  return "";
+}
 
 export default function Home() {
+  const [messages, setMessages] = useState<Message[]>([
+    { id: "intro", role: "assistant", content: INTRO },
+  ]);
+  const [step, setStep] = useState(0);
+  const [answers, setAnswers] = useState<Record<AnswerKey, string>>({
+    field: "",
+    role: "",
+    experience: "",
+    skills: "",
+    enjoys: "",
+  });
+  const [inputValue, setInputValue] = useState("");
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [report, setReport] = useState<Report | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isAnalyzing, report, errorMsg]);
+
+  useEffect(() => {
+    if (!isAnalyzing) inputRef.current?.focus();
+  }, [step, isAnalyzing]);
+
+  function addMsg(role: "assistant" | "user", content: string) {
+    setMessages((prev) => [
+      ...prev,
+      { id: `${Date.now()}-${Math.random()}`, role, content },
+    ]);
+  }
+
+  async function handleSubmit() {
+    const value = inputValue.trim();
+
+    // Step 0: waiting for "start"
+    if (step === 0) {
+      if (!value) return;
+      addMsg("user", value);
+      setInputValue("");
+      if (value.toLowerCase() !== "start") {
+        setTimeout(() => addMsg("assistant", "Type **start** when you're ready to begin."), 350);
+        return;
+      }
+      setTimeout(() => {
+        addMsg("assistant", QUESTIONS[0]);
+        setStep(1);
+      }, 350);
+      return;
+    }
+
+    // Steps 1–5: questions (1 & 2 required, 3–5 optional)
+    if (step >= 1 && step <= 5) {
+      const isRequired = step <= 2;
+      if (!value && isRequired) {
+        inputRef.current?.focus();
+        return;
+      }
+
+      const key = ANSWER_KEYS[step - 1];
+      const stored = value || "";
+
+      addMsg("user", value || "—");
+      setInputValue("");
+
+      const updatedAnswers = { ...answers, [key]: stored };
+      setAnswers(updatedAnswers);
+
+      if (step < 5) {
+        setTimeout(() => {
+          addMsg("assistant", QUESTIONS[step]);
+          setStep(step + 1);
+        }, 400);
+      } else {
+        // All 5 questions answered — start analysis
+        setStep(6);
+        setIsAnalyzing(true);
+        setErrorMsg(null);
+
+        try {
+          const res = await fetch("/api/analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(updatedAnswers),
+          });
+
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({ message: "Analysis failed." }));
+            throw new Error(err.message || "Analysis failed.");
+          }
+
+          const data: Report = await res.json();
+          setReport(data);
+          setStep(7);
+        } catch (err) {
+          setErrorMsg(
+            err instanceof Error
+              ? err.message
+              : "Something went wrong. Please refresh and try again."
+          );
+          setStep(5);
+        } finally {
+          setIsAnalyzing(false);
+        }
+      }
+    }
+  }
+
+  function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit();
+    }
+  }
+
+  const isInputDisabled = isAnalyzing || step === 6 || step === 7;
+  const isRequired = step === 1 || step === 2;
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <div className="flex flex-col h-full" style={{ background: "var(--bg)" }}>
+      {/* Header */}
+      <header
+        className="shrink-0 flex items-center justify-center px-4 py-4 border-b"
+        style={{
+          background: "var(--surface)",
+          borderColor: "var(--border)",
+        }}
+      >
+        <div className="w-full max-w-[680px] flex items-center gap-3">
+          <div
+            className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
+            style={{ background: "var(--accent)", color: "#FFF" }}
+          >
+            DV
+          </div>
+          <div>
+            <h1
+              className="text-sm font-semibold leading-tight"
+              style={{ color: "var(--text)" }}
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+              The Dorothy Vaughan Effect
+            </h1>
+            <p className="text-xs" style={{ color: "var(--subtle)" }}>
+              Get ahead of the wave
+            </p>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+      </header>
+
+      {/* Messages */}
+      <main className="flex-1 overflow-y-auto">
+        <div className="w-full max-w-[680px] mx-auto px-4 py-6 space-y-4">
+          {messages.map((msg, i) => (
+            <ChatMessage
+              key={msg.id}
+              role={msg.role}
+              content={msg.content}
+              animate={i > 0}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+          ))}
+
+          {isAnalyzing && <TypingIndicator />}
+
+          {errorMsg && (
+            <div
+              className="animate-in rounded-xl px-4 py-3 text-sm"
+              style={{
+                background: "#FFF5F5",
+                border: "1px solid #FECACA",
+                color: "#B91C1C",
+              }}
+            >
+              {errorMsg} — please refresh and try again.
+            </div>
+          )}
+
+          {report && (
+            <div className="animate-in">
+              <ReportView
+                report={report}
+                field={answers.field}
+                role={answers.role}
+              />
+            </div>
+          )}
+
+          <div ref={bottomRef} />
         </div>
       </main>
+
+      {/* Input bar */}
+      {!isInputDisabled && (
+        <footer
+          className="shrink-0 border-t px-4 py-3"
+          style={{
+            background: "var(--surface)",
+            borderColor: "var(--border)",
+          }}
+        >
+          <div className="w-full max-w-[680px] mx-auto flex items-end gap-2">
+            <textarea
+              ref={inputRef}
+              rows={1}
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyDown={onKeyDown}
+              placeholder={getPlaceholder(step)}
+              disabled={isInputDisabled}
+              className="flex-1 resize-none rounded-xl px-4 py-3 text-sm leading-relaxed outline-none transition-colors"
+              style={{
+                background: "var(--bg)",
+                border: "1px solid var(--border)",
+                color: "var(--text)",
+                minHeight: "46px",
+                maxHeight: "120px",
+              }}
+              onInput={(e) => {
+                const el = e.currentTarget;
+                el.style.height = "auto";
+                el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+              }}
+            />
+            <button
+              onClick={handleSubmit}
+              disabled={isInputDisabled || (!inputValue.trim() && isRequired)}
+              className="shrink-0 w-10 h-10 rounded-xl flex items-center justify-center transition-opacity disabled:opacity-30"
+              style={{ background: "var(--accent)" }}
+              aria-label="Send"
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="white"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M2 8h12M9 3l5 5-5 5" />
+              </svg>
+            </button>
+          </div>
+          {step >= 3 && step <= 5 && (
+            <p
+              className="text-center text-xs mt-2"
+              style={{ color: "var(--subtle)" }}
+            >
+              Press Enter to skip
+            </p>
+          )}
+        </footer>
+      )}
     </div>
   );
 }
