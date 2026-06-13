@@ -113,7 +113,7 @@ export async function POST(request: Request) {
     // Call 2 — Synthesize into structured JSON (no tools)
     const synthResponse = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 2500,
+      max_tokens: 4096,
       system: SYNTH_SYSTEM,
       messages: [
         {
@@ -135,13 +135,15 @@ export async function POST(request: Request) {
         ? synthResponse.content[0].text
         : "";
 
-    // Strip any markdown code fences defensively
-    const cleanedText = rawText
+    // Extract the JSON object robustly — strip fences then grab {…}
+    const fenceStripped = rawText
       .replace(/^```(?:json)?\s*/i, "")
       .replace(/\s*```\s*$/i, "")
       .trim();
 
-    const report = JSON.parse(cleanedText);
+    const jsonMatch = fenceStripped.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new SyntaxError("No JSON object found in synthesis response.");
+    const report = JSON.parse(jsonMatch[0]);
     return NextResponse.json(report);
   } catch (error) {
     console.error("[analyze] error:", error);
