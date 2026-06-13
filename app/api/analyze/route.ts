@@ -168,20 +168,33 @@ export async function POST(request: Request) {
       throw new Error("Synthesis response was truncated — max_tokens limit reached.");
     }
 
-    const rawText =
-      synthResponse.content[0].type === "text"
-        ? synthResponse.content[0].text
-        : "";
+const rawText = synthResponse.content
+  .filter(
+    (block): block is Anthropic.TextBlock =>
+      block.type === "text"
+  )
+  .map((block) => block.text)
+  .join("\n");
 
-    // Extract JSON: substring from first '{' to last '}'
-    const firstBrace = rawText.indexOf("{");
-    const lastBrace = rawText.lastIndexOf("}");
-    if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
-      throw new SyntaxError("No JSON object found in synthesis response.");
-    }
-    const report = JSON.parse(rawText.slice(firstBrace, lastBrace + 1));
+// Extract JSON: substring from first '{' to last '}'
+const firstBrace = rawText.indexOf("{");
+const lastBrace = rawText.lastIndexOf("}");
 
-    return NextResponse.json(report);
+if (
+  firstBrace === -1 ||
+  lastBrace === -1 ||
+  lastBrace <= firstBrace
+) {
+  throw new SyntaxError(
+    "No JSON object found in synthesis response."
+  );
+}
+
+const report = JSON.parse(
+  rawText.slice(firstBrace, lastBrace + 1)
+);
+
+return NextResponse.json(report);
   } catch (error) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const e = error as any;
