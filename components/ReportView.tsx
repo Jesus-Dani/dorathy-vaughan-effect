@@ -52,6 +52,8 @@ function Card({
         background: "var(--surface)",
         border: "1px solid var(--border)",
         animationDelay: `${delay}ms`,
+        breakInside: "avoid",
+        pageBreakInside: "avoid",
       }}
     >
       {children}
@@ -69,11 +71,16 @@ export default function ReportView({ report, field, role }: ReportViewProps) {
       const filename = `dorothy-move_${role.replace(/\s+/g, "-").toLowerCase()}_${field.replace(/\s+/g, "-").toLowerCase()}.pdf`;
       html2pdf()
         .set({
-          margin: [0.6, 0.6],
+          margin: [14, 14, 14, 14],   // mm: top, right, bottom, left
           filename,
-          image: { type: "jpeg", quality: 0.97 },
-          html2canvas: { scale: 2, useCORS: true },
-          jsPDF: { unit: "in", format: "letter", orientation: "portrait" },
+          image: { type: "jpeg", quality: 0.95 },
+          html2canvas: {
+            scale: 1.5,
+            useCORS: true,
+            backgroundColor: "#F8F8F5",
+          },
+          jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+          pagebreak: { mode: ["avoid-all", "css", "legacy"] },
         })
         .from(reportRef.current)
         .save();
@@ -251,6 +258,8 @@ export default function ReportView({ report, field, role }: ReportViewProps) {
             background: "var(--accent-bg)",
             border: "2px solid var(--accent-border)",
             animationDelay: `${baseDelay + step * 6}ms`,
+            breakInside: "avoid",
+            pageBreakInside: "avoid",
           }}
         >
           <p
