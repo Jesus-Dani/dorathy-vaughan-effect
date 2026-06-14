@@ -1,19 +1,76 @@
-import { GoogleGenAI } from "@google/genai";
+import OpenAI from "openai";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const deepseek = new OpenAI({
+  apiKey: process.env.DEEPSEEK_API_KEY,
+  baseURL: "https://api.deepseek.com",
+});
+
+const TAVILY_ENDPOINT = "https://api.tavily.com/search";
+
+type TavilyResult = { title: string; url: string; content: string };
+
+async function tavilySearch(query: string): Promise<TavilyResult[]> {
+  const res = await fetch(TAVILY_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.TAVILY_API_KEY}`,
+    },
+    body: JSON.stringify({
+      query,
+      search_depth: "advanced", // "basic" is ~half the credits if you want to save
+      max_results: 5,
+      include_answer: false,
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Tavily ${res.status}: ${await res.text()}`);
+  }
+
+  const data = await res.json();
+  return (data.results ?? []) as TavilyResult[];
+}
+
+// Run targeted searches in parallel; one failed query never kills the rest.
+async function gatherWebContext(field: string, role: string): Promise<string> {
+  const year = new Date().getFullYear();
+  const queries = [
+    `${field} industry trends ${year}`,
+    `how AI is changing the ${role} role — tasks automated and augmented`,
+    `most in-demand skills for ${role} ${year} best online courses and certifications`,
+  ];
+
+  const settled = await Promise.allSettled(queries.map((q) => tavilySearch(q)));
+
+  const blocks: string[] = [];
+  settled.forEach((r, i) => {
+    if (r.status === "fulfilled" && r.value.length) {
+      const items = r.value
+        .map((it) => `- ${it.title}\n  URL: ${it.url}\n  ${it.content}`)
+        .join("\n");
+      blocks.push(`### Results for: "${queries[i]}"\n${items}`);
+    } else if (r.status === "rejected") {
+      console.error(`[analyze] Tavily query failed ("${queries[i]}"):`, r.reason);
+    }
+  });
+
+  return blocks.join("\n\n");
+}
 
 function buildResearchPrompt(
   field: string,
   role: string,
   experience: string,
   skills: string,
-  enjoys: string
+  enjoys: string,
+  webContext: string
 ): string {
-  return `You are a research assistant gathering current, factual intelligence to inform a career-strategy report. Use web search to find the most up-to-date information available.
+  return `You are a research assistant turning live web search results into dense, factual notes for a career-strategy report.
 
 The person works in this field/industry: ${field}
 Their current role: ${role}
@@ -21,13 +78,20 @@ Years of experience: ${experience || "not specified"}
 Their current skills: ${skills || "not specified"}
 What they enjoy most about their work: ${enjoys || "not specified"}
 
-Research and return concise, dense notes (not polished prose) on:
+Below are REAL web search results with working source URLs. Base your notes ONLY on these. When you cite a source, use a URL that appears verbatim in the results below — NEVER invent or guess a URL.
+
+WEB SEARCH RESULTS:
+"""
+${webContext}
+"""
+
+Return concise, dense notes (not polished prose) on:
 1. CURRENT TRENDS shaping ${field} right now — what is actively changing in tools, methods, expectations, and hiring.
 2. EMERGING TRENDS likely to matter over the next 12-24 months in ${field}.
 3. How AI specifically is changing the "${role}" role — which tasks are being automated or augmented, and where human judgment is becoming MORE valuable.
-4. The SKILLS becoming most valuable for someone in this role, and for EACH one a concrete, currently-available place to learn it (real course, certification, or official documentation) with a working URL. Prefer well-known platforms (Coursera, edX, freeCodeCamp, official docs).
+4. The SKILLS becoming most valuable for someone in this role, and for EACH one a concrete place to learn it (real course, certification, or official docs) drawn from a URL in the results above.
 
-Include the source URL inline for every factual claim. This is raw material for a later step, so favor density and accuracy over polish. Today's date is in 2026 — prioritize the most recent information.`;
+Include the source URL inline for every factual claim. Favor density and accuracy over polish.`;
 }
 
 const SYNTH_SYSTEM = `You are a sharp, encouraging career strategist, working in the spirit of Dorothy Vaughan — the NASA mathematician who, when IBM mainframes threatened the human-computer jobs, taught herself FORTRAN and became the person who ran the machine.
@@ -84,17 +148,24 @@ export async function POST(request: Request) {
       );
     }
 
-    // ── Call 1: Research (Google Search grounding) — isolated, never kills the request ──
+    // ── Call 1: Research — Tavily web search + DeepSeek synthesis ──
+    // Isolated: if search or synthesis fails, we fall through to model knowledge.
     let researchNotes = "";
     try {
-      const researchResult = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: buildResearchPrompt(field, role, experience, skills, enjoys),
-        config: {
-          tools: [{ googleSearch: {} }],
-        },
-      });
-      researchNotes = researchResult.text ?? "";
+      const webContext = await gatherWebContext(field, role);
+
+      if (webContext.trim()) {
+        const researchResult = await deepseek.chat.completions.create({
+          model: "deepseek-v4-flash",
+          messages: [
+            {
+              role: "user",
+              content: buildResearchPrompt(field, role, experience, skills, enjoys, webContext),
+            },
+          ],
+        });
+        researchNotes = researchResult.choices[0]?.message?.content ?? "";
+      }
     } catch (researchErr) {
       console.error(
         "[analyze] research call failed:",
@@ -110,22 +181,25 @@ export async function POST(request: Request) {
       `Research notes unavailable. Generating report from model knowledge as of early 2026.`;
 
     // ── Call 2: Synthesize — JSON mode, no tools ──
-    const synthResult = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: buildSynthPrompt(field, role, experience, skills, enjoys, notesForSynth),
-      config: {
-        systemInstruction: SYNTH_SYSTEM,
-        responseMimeType: "application/json",
-        maxOutputTokens: 8000,
-      },
+    const synthResult = await deepseek.chat.completions.create({
+      model: "deepseek-v4-flash",
+      messages: [
+        { role: "system", content: SYNTH_SYSTEM },
+        {
+          role: "user",
+          content: buildSynthPrompt(field, role, experience, skills, enjoys, notesForSynth),
+        },
+      ],
+      response_format: { type: "json_object" },
+      max_tokens: 8000,
     });
 
-    const finishReason = synthResult.candidates?.[0]?.finishReason;
-    if (finishReason === "MAX_TOKENS") {
-      throw new Error("Synthesis response was truncated — MAX_TOKENS reached.");
+    const choice = synthResult.choices[0];
+    if (choice?.finish_reason === "length") {
+      throw new Error("Synthesis response was truncated — max_tokens reached.");
     }
 
-    const rawText = synthResult.text ?? "";
+    const rawText = choice?.message?.content ?? "";
 
     // Extract JSON: substring from first '{' to last '}'
     const firstBrace = rawText.indexOf("{");
@@ -143,11 +217,9 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         message: "Analysis failed. Please try again.",
-        ...(process.env.NODE_ENV !== "production" && {
-          errorName: e?.name,
-          errorStatus: e?.status,
-          errorMessage: e?.message,
-        }),
+        errorName: e?.name,
+        errorStatus: e?.status ?? e?.statusCode,
+        errorMessage: e?.message,
       },
       { status: 500 }
     );
