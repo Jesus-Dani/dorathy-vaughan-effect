@@ -69,21 +69,32 @@ export default function ReportView({ report, field, role }: ReportViewProps) {
     try {
       const { default: html2pdf } = await import("html2pdf.js");
       const filename = `dorothy-move_${role.replace(/\s+/g, "-").toLowerCase()}_${field.replace(/\s+/g, "-").toLowerCase()}.pdf`;
-      html2pdf()
+
+      // html2canvas doesn't run CSS animations, so report-section elements
+      // stay at their base opacity:0. Force them visible before capture.
+      const animated = reportRef.current.querySelectorAll<HTMLElement>(".report-section");
+      animated.forEach((el) => {
+        el.style.opacity = "1";
+        el.style.animation = "none";
+      });
+
+      await html2pdf()
         .set({
-          margin: [14, 14, 14, 14],   // mm: top, right, bottom, left
+          margin: [14, 14, 14, 14],
           filename,
           image: { type: "jpeg", quality: 0.95 },
-          html2canvas: {
-            scale: 1.5,
-            useCORS: true,
-            backgroundColor: "#F8F8F5",
-          },
+          html2canvas: { scale: 1.5, useCORS: true, backgroundColor: "#F8F8F5" },
           jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
           pagebreak: { mode: ["avoid-all", "css", "legacy"] },
         })
         .from(reportRef.current)
         .save();
+
+      // Restore so the UI animations still work if the user interacts again
+      animated.forEach((el) => {
+        el.style.opacity = "";
+        el.style.animation = "";
+      });
     } catch {
       window.print();
     }
