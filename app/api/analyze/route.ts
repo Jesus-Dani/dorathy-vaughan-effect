@@ -22,8 +22,8 @@ async function tavilySearch(query: string): Promise<TavilyResult[]> {
     },
     body: JSON.stringify({
       query,
-      search_depth: "advanced", // "basic" is ~half the credits if you want to save
-      max_results: 5,
+      search_depth: "basic",
+      max_results: 3,
       include_answer: false,
     }),
   });
@@ -37,62 +37,41 @@ async function tavilySearch(query: string): Promise<TavilyResult[]> {
 }
 
 // Run targeted searches in parallel; one failed query never kills the rest.
+// Hard 10-second timeout on the whole block so Tavily never stalls synthesis.
 async function gatherWebContext(field: string, role: string): Promise<string> {
   const year = new Date().getFullYear();
   const queries = [
     `${field} industry trends ${year}`,
-    `how AI is changing the ${role} role — tasks automated and augmented`,
-    `most in-demand skills for ${role} ${year} best online courses and certifications`,
+    `how AI is changing the ${role} role`,
+    `top skills for ${role} ${year} online courses`,
   ];
 
-  const settled = await Promise.allSettled(queries.map((q) => tavilySearch(q)));
+  const timeout = new Promise<string>((_, reject) =>
+    setTimeout(() => reject(new Error("Tavily timeout")), 10000)
+  );
 
-  const blocks: string[] = [];
-  settled.forEach((r, i) => {
-    if (r.status === "fulfilled" && r.value.length) {
-      const items = r.value
-        .map((it) => `- ${it.title}\n  URL: ${it.url}\n  ${it.content}`)
-        .join("\n");
-      blocks.push(`### Results for: "${queries[i]}"\n${items}`);
-    } else if (r.status === "rejected") {
-      console.error(`[analyze] Tavily query failed ("${queries[i]}"):`, r.reason);
-    }
+  const search = (async () => {
+    const settled = await Promise.allSettled(queries.map((q) => tavilySearch(q)));
+    const blocks: string[] = [];
+    settled.forEach((r, i) => {
+      if (r.status === "fulfilled" && r.value.length) {
+        const items = r.value
+          .map((it) => `- ${it.title}\n  URL: ${it.url}\n  ${it.content.slice(0, 600)}`)
+          .join("\n");
+        blocks.push(`### ${queries[i]}\n${items}`);
+      } else if (r.status === "rejected") {
+        console.error(`[analyze] Tavily query failed ("${queries[i]}"):`, r.reason);
+      }
+    });
+    return blocks.join("\n\n");
+  })();
+
+  return Promise.race([search, timeout]).catch((err) => {
+    console.error("[analyze] gatherWebContext failed:", err.message);
+    return "";
   });
-
-  return blocks.join("\n\n");
 }
 
-function buildResearchPrompt(
-  field: string,
-  role: string,
-  experience: string,
-  skills: string,
-  enjoys: string,
-  webContext: string
-): string {
-  return `You are a research assistant turning live web search results into dense, factual notes for a career-strategy report.
-
-The person works in this field/industry: ${field}
-Their current role: ${role}
-Years of experience: ${experience || "not specified"}
-Their current skills: ${skills || "not specified"}
-What they enjoy most about their work: ${enjoys || "not specified"}
-
-Below are REAL web search results with working source URLs. Base your notes ONLY on these. When you cite a source, use a URL that appears verbatim in the results below — NEVER invent or guess a URL.
-
-WEB SEARCH RESULTS:
-"""
-${webContext}
-"""
-
-Return concise, dense notes (not polished prose) on:
-1. CURRENT TRENDS shaping ${field} right now — what is actively changing in tools, methods, expectations, and hiring.
-2. EMERGING TRENDS likely to matter over the next 12-24 months in ${field}.
-3. How AI specifically is changing the "${role}" role — which tasks are being automated or augmented, and where human judgment is becoming MORE valuable.
-4. The SKILLS becoming most valuable for someone in this role, and for EACH one a concrete place to learn it (real course, certification, or official docs) drawn from a URL in the results above.
-
-Include the source URL inline for every factual claim. Favor density and accuracy over polish.`;
-}
 
 const SYNTH_SYSTEM = `You are a sharp, encouraging career strategist, working in the spirit of Dorothy Vaughan — the NASA mathematician who, when IBM mainframes threatened the human-computer jobs, taught herself FORTRAN and became the person who ran the machine.
 
@@ -148,36 +127,11 @@ export async function POST(request: Request) {
       );
     }
 
-    // ── Call 1: Research — Tavily web search + DeepSeek synthesis ──
-    // Isolated: if search or synthesis fails, we fall through to model knowledge.
-    let researchNotes = "";
-    try {
-      const webContext = await gatherWebContext(field, role);
-
-      if (webContext.trim()) {
-        const researchResult = await deepseek.chat.completions.create({
-          model: "deepseek-v4-flash",
-          messages: [
-            {
-              role: "user",
-              content: buildResearchPrompt(field, role, experience, skills, enjoys, webContext),
-            },
-          ],
-        });
-        researchNotes = researchResult.choices[0]?.message?.content ?? "";
-      }
-    } catch (researchErr) {
-      console.error(
-        "[analyze] research call failed:",
-        researchErr instanceof Error
-          ? `${researchErr.name}: ${researchErr.message}`
-          : researchErr
-      );
-      // Fall through — synthesis will run on model knowledge alone
-    }
+    // ── Call 1: Tavily web search (10s timeout, never kills the request) ──
+    const webContext = await gatherWebContext(field, role);
 
     const notesForSynth =
-      researchNotes.trim() ||
+      webContext.trim() ||
       `Research notes unavailable. Generating report from model knowledge as of early 2026.`;
 
     // ── Call 2: Synthesize — JSON mode, no tools ──
